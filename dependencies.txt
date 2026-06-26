@@ -1,0 +1,9 @@
+pip install groq python-dotenv
+pip install fastapi uvicorn pydantic
+python -m pip install psycopg2-binary
+npx create-next-app@latest legal-frontend
+cd legal-frontend
+npm install lucide-react
+npm install firebase
+
+
