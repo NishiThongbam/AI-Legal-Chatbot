@@ -1,7 +1,10 @@
 import os
 import psycopg2
 from psycopg2.extras import RealDictCursor
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException 
+from fastapi import File, UploadFile, HTTPException, Depends
+import pdfplumber
+import io
 from pydantic import BaseModel
 from typing import List
 from dotenv import load_dotenv
@@ -66,6 +69,58 @@ def get_lawyers_by_specialty(specialty_name: str) -> List[dict]:
     conn.close()
     
     return [dict(row) for row in rows]
+
+
+
+
+@app.post("/api/upload")
+async def upload_document(file: UploadFile = File(...)): # Add db: Session = Depends(get_db) if using database
+    try:
+        # 1. Verify it's a PDF
+        if file.content_type != "application/pdf":
+            raise HTTPException(status_code=400, detail="Only PDF files are supported.")
+
+        # 2. Read the file into memory
+        file_content = await file.read()
+        
+        # 3. Extract text using pdfplumber
+        extracted_text = ""
+        with pdfplumber.open(io.BytesIO(file_content)) as pdf:
+            for page in pdf.pages:
+                extracted_text += page.extract_text() + "\n"
+
+        # 4. Truncate text if it's too long (to save AI tokens)
+        truncated_text = extracted_text[:3000]
+
+        # 5. Create a prompt for the AI based on the document text
+        document_prompt = f"I am uploading a legal document. Here is the text: \n\n{truncated_text}\n\nPlease analyze this document and categorize my legal issue."
+
+        # 6. Re-use your existing classification logic!
+        # (Make sure to import classify_legal_issue from your router file)
+        from legal_router import classify_legal_issue 
+        classification = classify_legal_issue(document_prompt)
+        category = classification.get("category", "General")
+        reasoning = classification.get("reasoning", "Analyzed via document upload.")
+
+        # 7. Fetch matching lawyers (Update this with your actual DB fetching logic)
+        # lawyers = db.query(Lawyer).filter(Lawyer.specialty == category).all()
+        # lawyer_list = [{"lawyer_name": l.name, "contact_email": l.email, "rating": l.rating} for l in lawyers]
+        
+        # Temporary dummy response until your DB is fully hooked up to this route:
+        lawyer_list = [
+            {"lawyer_name": "Jane Doe", "contact_email": "jane@example.com", "rating": 4.9}
+        ]
+
+        return {
+            "detected_category": category,
+            "reasoning": f"Based on the uploaded document '{file.filename}', {reasoning}",
+            "recommended_lawyers": lawyer_list
+        }
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error processing document: {str(e)}")
+
+
 
 
 @app.post("/api/intake", response_model=ChatResponse)
