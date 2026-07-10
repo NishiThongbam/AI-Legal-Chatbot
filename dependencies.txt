@@ -5,5 +5,8 @@ npx create-next-app@latest legal-frontend
 cd legal-frontend
 npm install lucide-react
 npm install firebase
+pip install python-multipart pdfplumber
+pip install sqlalchemy
+pip install google-api-python-client google-auth-httplib2 google-auth-oauthlib
 
 

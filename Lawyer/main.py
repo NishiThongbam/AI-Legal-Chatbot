@@ -1,15 +1,30 @@
 from fastapi import FastAPI, File, UploadFile, HTTPException, Depends
 from fastapi.middleware.cors import CORSMiddleware
-from sqlalchemy.orm import Session
 from pydantic import BaseModel
-import pdfplumber
-import io
+
+
+from legal_router import classify_legal_issue
+
+#Debugging
 import traceback
 
-# Import your local database and AI tools
+#File Upload
+import pdfplumber
+import io
+
+#Local database and AI tools
+from sqlalchemy.orm import Session
 from database import get_db
 from models import Lawyer
-from legal_router import classify_legal_issue
+
+
+
+#Calendar
+
+from datetime import datetime, timedelta
+from google.oauth2 import service_account
+from googleapiclient.discovery import build
+
 
 app = FastAPI()
 
@@ -25,11 +40,119 @@ app.add_middleware(
 class IntakeRequest(BaseModel):
     user_message: str
 
+
+
+
+# 1. Define the input structure matching your React frontend payload
 class ScheduleRequest(BaseModel):
     lawyer_name: str
     user_email: str
-    date: str
-    time: str
+    date: str  # Format from React: "YYYY-MM-DD"
+    time: str  # Format from React: "HH:MM AM/PM" (e.g., "01:00 PM")
+
+# 2. Authenticate with Google using your service_account.json
+SCOPES = ['https://www.googleapis.com/auth/calendar']
+SERVICE_ACCOUNT_FILE = 'service_account.json'
+
+def get_calendar_service():
+    try:
+        creds = service_account.Credentials.from_service_account_file(
+            SERVICE_ACCOUNT_FILE, scopes=SCOPES
+        )
+        return build('calendar', 'v3', credentials=creds)
+    except Exception as e:
+        print(f"Failed to authenticate with Google: {str(e)}")
+        return None
+
+@app.post("/api/schedule")
+async def schedule_consultation(request: ScheduleRequest):
+    try:
+        # Get the authenticated Google Calendar service
+        service = get_calendar_service()
+        if not service:
+            raise HTTPException(status_code=500, detail="Google Calendar service is unavailable.")
+
+        # 3. Convert React frontend text strings into a Python Datetime object
+        # Example input: date="2026-07-15", time="01:00 PM"
+        combined_str = f"{request.date} {request.time}"
+        start_datetime = datetime.strptime(combined_str, "%Y-%m-%d %I:%M %p")
+        
+        # Assume consultations last exactly 30 minutes
+        end_datetime = start_datetime + timedelta(minutes=30)
+
+        # Format datetimes into ISO format strings with a timezone offset (e.g., UTC)
+        # Change "+00:00" to your specific local timezone offset if desired (e.g., "-05:00" for EST)
+        iso_start = start_datetime.strftime("%Y-%m-%dT%H:%M:%S+00:00")
+        iso_end = end_datetime.strftime("%Y-%m-%dT%H:%M:%S+00:00")
+
+        # 4. Construct the Google Calendar Event structure
+        event_body = {
+            'summary': f'LegalConnect Consultation: {request.lawyer_name}',
+            'description': f'Initial intake legal consultation arranged via LegalConnect platform for user {request.user_email}.',
+            'start': {
+                'dateTime': iso_start,
+                'timeZone': 'UTC',
+            },
+            'end': {
+                'dateTime': iso_end,
+                'timeZone': 'UTC',
+            },
+            # Add the user's email as an attendee so they get the invite link automatically
+            'attendees': [
+                {'email': request.user_email},
+            ],
+            # Request an automated Google Meet video conferencing link
+            'conferenceData': {
+                'createRequest': {
+                    'requestId': f"legalconnect_{int(datetime.now().timestamp())}",
+                    'conferenceSolutionKey': {'type': 'hangoutsMeet'}
+                }
+            },
+            'reminders': {
+                'useDefault': False,
+                'overrides': [
+                    {'method': 'email', 'minutes': 24 * 60},
+                    {'method': 'popup', 'minutes': 15},
+                ],
+            },
+        }
+
+        # 5. Execute the insert API call to primary calendar
+        # conferenceDataVersion=1 enables Google Meet creation
+        created_event = service.events().insert(
+            calendarId='963fdeecafdfdf5078c33ae67966fec8d4264ffa7069698c1cd9fa30ea381b35@group.calendar.google.com',
+            body=event_body,
+            conferenceDataVersion=1,
+            sendUpdates='all' # Sends automated email invitation to attendees
+        ).execute()
+
+        # Extract the generated Google Meet link safely
+        meet_link = created_event.get('hangoutLink', 'No video link generated')
+
+        return {
+            "status": "success",
+            "message": f"Appointment booked with {request.lawyer_name}",
+            "html_link": created_event.get('htmlLink'),
+            "meet_link": meet_link
+        }
+
+    except Exception as e:
+        print("\n--- SCHEDULING ERROR DETAILS ---")
+        traceback.print_exc()
+        print("--------------------------------\n")
+        raise HTTPException(status_code=500, detail=f"Error scheduling calendar event: {str(e)}")
+
+
+
+
+
+
+
+
+
+
+
+
 
 @app.post("/api/intake")
 async def process_intake(request: IntakeRequest, db: Session = Depends(get_db)):
@@ -123,8 +246,3 @@ async def upload_document(file: UploadFile = File(...), db: Session = Depends(ge
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error processing document: {str(e)}")
 
-@app.post("/api/schedule")
-async def schedule_consultation(request: ScheduleRequest):
-    # In a real app, you would save this to a 'appointments' table in the DB
-    # or send a calendar invite via email here.
-    return {"status": "success", "message": f"Appointment booked with {request.lawyer_name} on {request.date} at {request.time}"}
