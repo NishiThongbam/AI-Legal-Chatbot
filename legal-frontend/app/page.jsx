@@ -14,6 +14,9 @@ import {
 // NEW: Import Firebase Storage tools
 import { getStorage, ref, uploadBytes, getDownloadURL } from 'firebase/storage';
 
+
+import BookingInterface from "./BookingInterface"
+
 const firebaseConfig = {
   apiKey: process.env.NEXT_PUBLIC_FIREBASE_API_KEY,
   authDomain: process.env.NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN,
@@ -56,6 +59,11 @@ export default function App() {
   const [scheduleDate, setScheduleDate] = useState('');
   const [scheduleTime, setScheduleTime] = useState('');
   const [isScheduling, setIsScheduling] = useState(false);
+
+
+
+  
+
 
   // --- EFFECT: Listen for User Login/Logout ---
   useEffect(() => {
@@ -216,11 +224,13 @@ export default function App() {
 
       if (!response.ok) throw new Error('Failed to book appointment');
 
+      const data = await response.json();
+
       setMessages((prev) => [...prev, {
         id: Date.now(),
         role: 'bot',
         type: 'text',
-        content: `✅ Success! Your consultation with ${selectedLawyer.lawyer_name} is booked for ${scheduleDate} at ${scheduleTime}. A calendar invite has been sent to ${user.email}.`
+        content: `✅ Success! Your consultation with ${selectedLawyer.lawyer_name} is booked for ${scheduleDate} at ${scheduleTime}. \n\nHere is your meeting link: ${data.meet_link}`
       }]);
 
       setSelectedLawyer(null);
@@ -481,6 +491,10 @@ export default function App() {
         </form>
         <p className="text-center text-xs text-slate-400 mt-3">This AI assistant routes your inquiry but does not provide official legal advice.</p>
       </footer>
+
+        
+
+
     </div>
   );
 }
