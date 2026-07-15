@@ -59,6 +59,8 @@ export default function App() {
   const [scheduleDate, setScheduleDate] = useState('');
   const [scheduleTime, setScheduleTime] = useState('');
   const [isScheduling, setIsScheduling] = useState(false);
+  const [availableSlots, setAvailableSlots] = useState([]);
+  const [isLoadingSlots, setIsLoadingSlots] = useState(false);
 
 
 
@@ -204,6 +206,33 @@ export default function App() {
     }
   };
 
+
+useEffect(() => {
+    if (!scheduleDate) {
+      setAvailableSlots([]);
+      return;
+    }
+
+    const fetchAvailability = async () => {
+      setIsLoadingSlots(true);
+      try {
+        const response = await fetch(`http://127.0.0.1:8000/api/availability?date=${scheduleDate}`);
+        if (response.ok) {
+          const data = await response.json();
+          setAvailableSlots(data.available_slots || []);
+        }
+      } catch (error) {
+        console.error("Failed to fetch availability:", error);
+      } finally {
+        setIsLoadingSlots(false);
+      }
+    };
+
+    fetchAvailability();
+  }, [scheduleDate]);
+
+
+
   // --- HANDLER: Book Consultation ---
   const handleScheduleSubmit = async (e) => {
     e.preventDefault();
@@ -347,15 +376,19 @@ export default function App() {
                       required
                       value={scheduleTime}
                       onChange={(e) => setScheduleTime(e.target.value)}
-                      className="w-full border border-slate-300 text-black rounded-lg py-2.5 pl-10 pr-4 focus:ring-2 focus:ring-blue-500 focus:outline-none appearance-none"
+                      disabled={isLoadingSlots || !scheduleDate}
+                      className="w-full border border-slate-300 text-black rounded-lg py-2.5 pl-10 pr-4 focus:ring-2 focus:ring-blue-500 focus:outline-none appearance-none disabled:bg-slate-100 disabled:text-slate-400"
                     >
-                      <option value="" disabled>Choose a time slot</option>
-                      <option value="09:00 AM">09:00 AM</option>
-                      <option value="10:00 AM">10:00 AM</option>
-                      <option value="11:30 AM">11:30 AM</option>
-                      <option value="01:00 PM">01:00 PM</option>
-                      <option value="02:30 PM">02:30 PM</option>
-                      <option value="04:00 PM">04:00 PM</option>
+                      <option value="" disabled>
+                        {isLoadingSlots ? "Loading slots..." : !scheduleDate ? "Select a date first" : availableSlots.length === 0 ? "No slots available" : "Choose a time slot"}
+                      </option>
+                      
+                      {/* Dynamically map the live slots from Python! */}
+                      {availableSlots.map((slot) => (
+                        <option key={slot} value={slot}>
+                          {slot}
+                        </option>
+                      ))}
                     </select>
                   </div>
                 </div>
