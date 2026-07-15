@@ -118,10 +118,10 @@ export default function App() {
     const file = e.target.files[0];
     if (!file || !user) return;
     
-    if (file.type !== 'application/pdf') {
-      alert('Please upload a PDF document.');
-      return;
-    }
+    if (file.type !== 'application/pdf' && !file.type.startsWith('image/')) {
+   alert('Please upload a PDF or an Image (JPG/PNG).');
+   return;
+ }
 
     setIsLoading(true);
 
@@ -513,8 +513,8 @@ useEffect(() => {
       {/* Input Form */}
       <footer className="bg-white border-t border-slate-200 p-4">
         <form onSubmit={handleSendMessage} className="max-w-4xl mx-auto relative flex items-center">
-          <input type="file" accept=".pdf" ref={fileInputRef} onChange={handleFileUpload} className="hidden" />
-          <button type="button" onClick={() => fileInputRef.current?.click()} disabled={isLoading} className="absolute left-2 text-slate-400 hover:text-blue-600 p-2 rounded-full transition-colors disabled:opacity-50 z-10" title="Upload Legal Document (PDF)">
+          <input type="file" accept=".pdf, image/jpeg, image/jpg, image/png" ref={fileInputRef} onChange={handleFileUpload} className="hidden" />
+          <button type="button" onClick={() => fileInputRef.current?.click()} disabled={isLoading} className="absolute left-2 text-slate-400 hover:text-blue-600 p-2 rounded-full transition-colors disabled:opacity-50 z-10" title="Upload Legal Document (PDF) or Image (PNG/JPG)">
             <Paperclip size={20} />
           </button>
           <input type="text" value={inputValue} onChange={(e) => setInputValue(e.target.value)} disabled={isLoading} placeholder="Describe your issue or attach a document..." className="w-full bg-slate-50 border border-slate-300 rounded-full py-4 pl-12 pr-16 text-slate-900 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent disabled:opacity-50" />

@@ -9,6 +9,9 @@ from legal_router import classify_legal_issue
 import traceback
 
 # File Upload
+import pytesseract
+from pdf2image import convert_from_bytes
+from PIL import Image
 import pdfplumber
 import io
 
@@ -21,6 +24,11 @@ from models import Lawyer
 from datetime import datetime, timedelta, timezone
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
+
+
+pytesseract.pytesseract.tesseract_cmd = r'C:\Program Files\Tesseract-OCR\tesseract.exe'
+
+
 
 app = FastAPI()
 
@@ -239,29 +247,51 @@ async def process_intake(request: IntakeRequest, db: Session = Depends(get_db)):
 @app.post("/api/upload")
 async def upload_document(file: UploadFile = File(...), db: Session = Depends(get_db)):
     try:
-        # 1. Verify it's a PDF
-        if file.content_type != "application/pdf":
-            raise HTTPException(status_code=400, detail="Only PDF files are supported.")
+        # 1. Accept PDFs AND Images
+        allowed_types = ["application/pdf", "image/jpeg", "image/jpg", "image/png"]
+        if file.content_type not in allowed_types:
+            raise HTTPException(status_code=400, detail="Only PDF and Image files are supported.")
 
-        # 2. Read the file into memory and extract text using pdfplumber
         file_content = await file.read()
         extracted_text = ""
-        with pdfplumber.open(io.BytesIO(file_content)) as pdf:
-            for page in pdf.pages:
-                extracted_text += page.extract_text() + "\n"
 
-        # 3. Truncate text if it's too long (to save AI tokens)
+        # 2. HYBRID PDF PROCESSING
+        if file.content_type == "application/pdf":
+            # Attempt A: Digital Text Extraction (Fast)
+            with pdfplumber.open(io.BytesIO(file_content)) as pdf:
+                for page in pdf.pages:
+                    text = page.extract_text()
+                    if text:
+                        extracted_text += text + "\n"
+            
+            # Attempt B: OCR Fallback (If the PDF was just a scanned image)
+            # If standard extraction found less than 50 characters, it's likely a scan.
+            if len(extracted_text.strip()) < 50:
+                print("No digital text found. Activating OCR Fallback...")
+                # Convert PDF pages to images
+                images = convert_from_bytes(file_content)
+                for image in images:
+                    # Run Tesseract OCR on each image page
+                    extracted_text += pytesseract.image_to_string(image) + "\n"
+
+        # 3. DIRECT IMAGE PROCESSING
+        elif file.content_type.startswith("image/"):
+            print("Processing direct image upload with OCR...")
+            image = Image.open(io.BytesIO(file_content))
+            extracted_text = pytesseract.image_to_string(image)
+
+        # 4. Clean and Truncate Text
+        if not extracted_text.strip():
+             raise HTTPException(status_code=400, detail="Could not extract any text from the document. Please ensure it is legible.")
+             
         truncated_text = extracted_text[:3000]
 
-        # 4. Create a prompt for the AI based on the document text
+        # 5. Route to AI as usual
         document_prompt = f"I am uploading a legal document. Here is the text: \n\n{truncated_text}\n\nPlease analyze this document and categorize my legal issue."
-
-        # 5. Use your AI logic to classify the document
         classification = classify_legal_issue(document_prompt)
         category = classification.get("category", "General")
         reasoning = classification.get("reasoning", "Analyzed via document upload.")
 
-        # 6. Fetch the cheapest lawyers based on the document's category
         lawyers = (
             db.query(Lawyer)
             .filter(Lawyer.specialization == category)
@@ -287,4 +317,6 @@ async def upload_document(file: UploadFile = File(...), db: Session = Depends(ge
         }
 
     except Exception as e:
+        import traceback
+        traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"Error processing document: {str(e)}")
