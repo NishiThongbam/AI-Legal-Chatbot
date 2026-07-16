@@ -1,9 +1,9 @@
 "use client";
 
 import React, { useState, useRef, useEffect } from 'react';
-import { Send, User, Scale, Briefcase, Star, Mail, Loader2, LogOut, Lock, Paperclip, Calendar, Clock, CheckCircle, X } from 'lucide-react';
-
-import { initializeApp, getApps, getApp } from 'firebase/app';
+import { Send, User, Scale, Briefcase, Star, Mail, Loader2, LogOut, Lock, Paperclip, Calendar, Clock, CheckCircle, X, Trash2, CalendarDays, Video, Banknote } from 'lucide-react';
+import { getStorage, ref, uploadBytes, getDownloadURL, listAll, getMetadata, deleteObject } from 'firebase/storage';
+import { initializeApp, getApps, getApp } from "firebase/app";
 import { 
   getAuth,
   createUserWithEmailAndPassword, 
@@ -12,7 +12,7 @@ import {
   signOut 
 } from 'firebase/auth';
 // NEW: Import Firebase Storage tools
-import { getStorage, ref, uploadBytes, getDownloadURL } from 'firebase/storage';
+
 
 
 import BookingInterface from "./BookingInterface"
@@ -63,8 +63,112 @@ export default function App() {
   const [isLoadingSlots, setIsLoadingSlots] = useState(false);
 
 
+  // --- APPOINTMENTS STATE ---
+  const [isAppointmentsOpen, setIsAppointmentsOpen] = useState(false);
+  const [userAppointments, setUserAppointments] = useState([]);
+  const [isLoadingAppointments, setIsLoadingAppointments] = useState(false);
+
+
+
+
+
+  // --- VAULT STATE ---
+  const [isVaultOpen, setIsVaultOpen] = useState(false);
+  const [userDocuments, setUserDocuments] = useState([]);
+  const [isLoadingVault, setIsLoadingVault] = useState(false);
+  const [deletingDocId, setDeletingDocId] = useState(null);
 
   
+
+
+  // --- HANDLER: Fetch User Documents ---
+  const handleOpenVault = async () => {
+    setIsVaultOpen(true);
+    setIsLoadingVault(true);
+    
+    try {
+      // 1. Point Firebase to the user's specific folder
+      const folderRef = ref(storage, `users/${user.uid}/documents`);
+      
+      // 2. Get a list of all files in that folder
+      const response = await listAll(folderRef);
+      
+      // 3. Loop through the files to get their URLs and dates
+      const docs = await Promise.all(response.items.map(async (itemRef) => {
+        const url = await getDownloadURL(itemRef);
+        const metadata = await getMetadata(itemRef);
+        
+        // Remove the timestamp prefix we added during upload for a cleaner display name
+        const cleanName = itemRef.name.split('_').slice(1).join('_') || itemRef.name;
+        
+        return {
+          id: itemRef.name,
+          name: cleanName,
+          url: url,
+          date: new Date(metadata.timeCreated).toLocaleString('en-US', {
+            month: 'short', 
+            day: 'numeric', 
+            year: 'numeric',
+            hour: 'numeric',
+            minute: '2-digit',
+            hour12: true
+          })
+        };
+      }));
+      
+      // Sort newest to oldest
+      setUserDocuments(docs.sort((a, b) => new Date(b.date) - new Date(a.date)));
+    } catch (error) {
+      console.error("Error fetching vault documents:", error);
+    } finally {
+      setIsLoadingVault(false);
+    }
+  };
+
+// --- HANDLER: Fetch User Appointments ---
+  const handleOpenAppointments = async () => {
+    setIsAppointmentsOpen(true);
+    setIsLoadingAppointments(true);
+    
+    try {
+      // Send the user's email to the Python backend to search Google Calendar
+      const response = await fetch(`http://127.0.0.1:8000/api/appointments?email=${encodeURIComponent(user.email)}`);
+      
+      if (response.ok) {
+        const data = await response.json();
+        setUserAppointments(data.appointments || []);
+      }
+    } catch (error) {
+      console.error("Error fetching appointments:", error);
+    } finally {
+      setIsLoadingAppointments(false);
+    }
+  };
+
+  // --- HANDLER: Delete User Document ---
+  const handleDeleteDocument = async (fileName) => {
+    // 1. Confirm with the user before permanently deleting
+    if (!window.confirm("Are you sure you want to permanently delete this document?")) return;
+
+    setDeletingDocId(fileName);
+    try {
+      // 2. Point Firebase to the exact file
+      const fileRef = ref(storage, `users/${user.uid}/documents/${fileName}`);
+      
+      // 3. Delete from Firebase
+      await deleteObject(fileRef);
+
+      // 4. Instantly remove it from the React UI without needing to refresh
+      setUserDocuments((prevDocs) => prevDocs.filter((doc) => doc.id !== fileName));
+    } catch (error) {
+      console.error("Error deleting document:", error);
+      alert("Failed to delete the document. Please try again.");
+    } finally {
+      setDeletingDocId(null);
+    }
+  };
+
+
 
 
   // --- EFFECT: Listen for User Login/Logout ---
@@ -113,28 +217,61 @@ export default function App() {
     }
   };
 
-  // --- HANDLER: Document Upload with Secure Storage ---
+// --- HANDLER: Document Upload with Secure Storage & Duplicate Check ---
   const handleFileUpload = async (e) => {
     const file = e.target.files[0];
     if (!file || !user) return;
     
     if (file.type !== 'application/pdf' && !file.type.startsWith('image/')) {
-   alert('Please upload a PDF or an Image (JPG/PNG).');
-   return;
- }
+      alert('Please upload a PDF or an Image (JPG/PNG).');
+      if (fileInputRef.current) fileInputRef.current.value = '';
+      return;
+    }
+
+
+    // 2. NEW: FILE SIZE CHECK (5MB Limit)
+    const MAX_FILE_SIZE_MB = 5;
+    const MAX_FILE_SIZE_BYTES = MAX_FILE_SIZE_MB * 1024 * 1024;
+    
+    if (file.size > MAX_FILE_SIZE_BYTES) {
+      alert(`Upload blocked: Your file is larger than the ${MAX_FILE_SIZE_MB}MB limit. Please compress your document or choose a smaller file.`);
+      if (fileInputRef.current) fileInputRef.current.value = '';
+      return;
+    }
+
+    setIsLoading(true);
 
     setIsLoading(true);
 
     try {
-      // 1. SECURE STORAGE: Upload the file to Firebase Storage
-      // We save it inside a specific folder named after the user's unique ID
+      // 1. DUPLICATE CHECK: Scan the user's vault before uploading
+      const folderRef = ref(storage, `users/${user.uid}/documents`);
+      const existingFiles = await listAll(folderRef);
+      
+      const isDuplicate = existingFiles.items.some((itemRef) => {
+        // We saved files as "123456789_filename.pdf". 
+        // This cuts off the timestamp prefix to get the original name.
+        const originalName = itemRef.name.substring(itemRef.name.indexOf('_') + 1);
+        return originalName === file.name;
+      });
+
+      if (isDuplicate) {
+        // Cancel the upload and alert the user in the chat
+        setMessages((prev) => [...prev, {
+          id: Date.now(),
+          role: 'bot',
+          type: 'text',
+          content: `⚠️ Upload canceled. A document named "${file.name}" already exists in your vault. Please rename the file if this is a new document, or check your vault to view the existing one.`
+        }]);
+        return; // Exits the function early to stop the upload!
+      }
+
+      // 2. SECURE STORAGE: Proceed with uploading to Firebase
       const fileRef = ref(storage, `users/${user.uid}/documents/${Date.now()}_${file.name}`);
       await uploadBytes(fileRef, file);
-      
-      // Get the secure, clickable download URL
       const downloadURL = await getDownloadURL(fileRef);
 
-      // 2. Add the document message to the chat UI
+      // 3. Add the document message to the chat UI
       const newUserMsg = { 
         id: Date.now(), 
         role: 'user', 
@@ -144,7 +281,7 @@ export default function App() {
       };
       setMessages((prev) => [...prev, newUserMsg]);
 
-      // 3. AI ANALYSIS: Send the raw file to your Python backend for reading
+      // 4. AI ANALYSIS: Send the raw file to your Python backend
       const formData = new FormData();
       formData.append('file', file);
 
@@ -164,7 +301,7 @@ export default function App() {
     } catch (error) {
       console.error("Upload error:", error);
       setMessages((prev) => [...prev, {
-        id: Date.now() + 1, role: 'bot', type: 'text', content: 'Sorry, an error occurred while uploading or analyzing your document.'
+        id: Date.now() + 1, role: 'bot', type: 'text', content: 'Sorry, an error occurred while processing your document.'
       }]);
     } finally {
       setIsLoading(false);
@@ -408,6 +545,148 @@ useEffect(() => {
         </div>
       )}
 
+
+      {/* VAULT MODAL */}
+      {isVaultOpen && (
+        <div className="absolute inset-0 z-50 flex items-center justify-center bg-slate-900/40 backdrop-blur-sm p-4">
+          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-lg overflow-hidden animate-in fade-in zoom-in-95 duration-200 flex flex-col max-h-[80vh]">
+            
+            <div className="bg-slate-900 p-4 flex justify-between items-center text-white">
+              <h3 className="font-semibold text-lg flex items-center gap-2">
+                <Lock size={20} className="text-blue-400" /> Secure Document Vault
+              </h3>
+              <button onClick={() => setIsVaultOpen(false)} className="hover:bg-slate-700 p-1 rounded-full transition-colors">
+                <X size={20} />
+              </button>
+            </div>
+            
+            <div className="p-6 overflow-y-auto flex-1 bg-slate-50">
+              {isLoadingVault ? (
+                <div className="flex flex-col items-center justify-center py-10 text-slate-500 gap-3">
+                  <Loader2 size={32} className="animate-spin text-blue-600" />
+                  <p>Decrypting vault contents...</p>
+                </div>
+              ) : userDocuments.length === 0 ? (
+                <div className="text-center py-10 text-slate-500 bg-white border border-slate-200 rounded-xl">
+                  <Paperclip size={48} className="mx-auto text-slate-300 mb-3" />
+                  <p className="font-medium text-slate-700">Your vault is empty.</p>
+                  <p className="text-sm mt-1">Documents you upload during intake will appear here.</p>
+                </div>
+              ) : (
+                <div className="space-y-3">
+                  {userDocuments.map((doc) => (
+                    <div key={doc.id} className="bg-white border border-slate-200 p-4 rounded-xl shadow-sm flex items-center justify-between gap-4 hover:shadow-md transition-shadow">
+                      
+                      <div className="flex items-center gap-3 overflow-hidden">
+                        <div className="bg-blue-50 text-blue-600 p-2.5 rounded-lg flex-shrink-0">
+                          <Paperclip size={20} />
+                        </div>
+                        <div className="truncate">
+                          <p className="font-medium text-slate-900 truncate" title={doc.name}>{doc.name}</p>
+                          {/* UPDATED: Emphasized Submission Date/Time */}
+                          <p className="text-xs font-medium text-slate-500 mt-0.5">
+                            Submitted: <span className="text-slate-700">{doc.date}</span>
+                          </p>
+                        </div>
+                      </div>
+                      
+                      {/* ACTION BUTTONS */}
+                      <div className="flex-shrink-0 flex items-center gap-2">
+                        <a 
+                          href={doc.url} 
+                          target="_blank" 
+                          rel="noopener noreferrer"
+                          className="bg-blue-50 text-blue-700 px-4 py-2 rounded-lg text-sm font-medium hover:bg-blue-100 transition-colors"
+                        >
+                          View
+                        </a>
+                        
+                        {/* NEW: Delete Button */}
+                        <button 
+                          onClick={() => handleDeleteDocument(doc.id)}
+                          disabled={deletingDocId === doc.id}
+                          className="p-2 text-red-500 hover:bg-red-50 hover:text-red-600 rounded-lg transition-colors disabled:opacity-50"
+                          title="Delete Document"
+                        >
+                          {deletingDocId === doc.id ? (
+                            <Loader2 size={18} className="animate-spin" />
+                          ) : (
+                            <Trash2 size={18} />
+                          )}
+                        </button>
+                      </div>
+
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
+
+      {/* APPOINTMENTS MODAL */}
+      {isAppointmentsOpen && (
+        <div className="absolute inset-0 z-50 flex items-center justify-center bg-slate-900/40 backdrop-blur-sm p-4">
+          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-lg overflow-hidden animate-in fade-in zoom-in-95 duration-200 flex flex-col max-h-[80vh]">
+            
+            <div className="bg-slate-900 p-4 flex justify-between items-center text-white">
+              <h3 className="font-semibold text-lg flex items-center gap-2">
+                <CalendarDays size={20} className="text-blue-400" /> My Appointments
+              </h3>
+              <button onClick={() => setIsAppointmentsOpen(false)} className="hover:bg-slate-700 p-1 rounded-full transition-colors">
+                <X size={20} />
+              </button>
+            </div>
+            
+            <div className="p-6 overflow-y-auto flex-1 bg-slate-50">
+              {isLoadingAppointments ? (
+                <div className="flex flex-col items-center justify-center py-10 text-slate-500 gap-3">
+                  <Loader2 size={32} className="animate-spin text-blue-600" />
+                  <p>Syncing schedule...</p>
+                </div>
+              ) : userAppointments.length === 0 ? (
+                <div className="text-center py-10 text-slate-500 bg-white border border-slate-200 rounded-xl">
+                  <Calendar size={48} className="mx-auto text-slate-300 mb-3" />
+                  <p className="font-medium text-slate-700">No upcoming appointments.</p>
+                  <p className="text-sm mt-1">Book a consultation through the chat.</p>
+                </div>
+              ) : (
+                <div className="space-y-3">
+                  {userAppointments.map((apt) => (
+                    <div key={apt.id} className="bg-white border border-slate-200 p-4 rounded-xl shadow-sm hover:shadow-md transition-shadow">
+                      <div className="flex items-start justify-between gap-4">
+                        
+                        <div>
+                          <p className="text-xs font-bold text-blue-600 uppercase tracking-wider mb-1">Upcoming Consultation</p>
+                          <p className="font-semibold text-slate-900 text-lg">{apt.lawyer_name}</p>
+                          <div className="flex items-center gap-4 mt-2 text-sm text-slate-600">
+                            <span className="flex items-center gap-1.5"><Calendar size={16} className="text-slate-400" /> {apt.date}</span>
+                            <span className="flex items-center gap-1.5"><Clock size={16} className="text-slate-400" /> {apt.time}</span>
+                          </div>
+                        </div>
+
+                        <a 
+                          href={apt.meet_link} 
+                          target="_blank" 
+                          rel="noopener noreferrer"
+                          className="flex-shrink-0 flex items-center gap-2 bg-blue-600 text-white px-4 py-2.5 rounded-lg text-sm font-medium hover:bg-blue-700 transition-colors"
+                        >
+                          <Video size={16} /> Join Meet
+                        </a>
+                        
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
+
       {/* Header */}
       <header className="bg-slate-900 text-white p-4 shadow-md flex items-center justify-between z-10">
         <div className="flex items-center gap-2">
@@ -416,6 +695,16 @@ useEffect(() => {
         </div>
         <div className="flex items-center gap-4">
             <div className="text-sm text-slate-300 hidden sm:block">{user.email}</div>
+            <button onClick={handleOpenVault} className="flex items-center gap-2 bg-blue-600 hover:bg-blue-700 px-3 py-1.5 rounded-lg transition-colors text-sm font-medium">
+                <Paperclip size={16} /><span>My Vault</span>
+            </button>
+
+            {/* NEW APPOINTMENTS BUTTON */}
+            <button onClick={handleOpenAppointments} className="flex items-center gap-2 bg-slate-800 hover:bg-slate-700 px-3 py-1.5 rounded-lg border border-slate-700 transition-colors text-sm font-medium">
+                <CalendarDays size={16} /><span>Appointments</span>
+            </button>
+
+
             <button onClick={handleLogout} className="flex items-center gap-2 bg-slate-800 hover:bg-slate-700 px-3 py-1.5 rounded-lg border border-slate-700 transition-colors text-sm">
                 <LogOut size={16} /><span>Logout</span>
             </button>
@@ -470,13 +759,25 @@ useEffect(() => {
                         <div className="bg-blue-100 text-blue-700 p-3 rounded-full">
                           <Briefcase size={24} />
                         </div>
-                        <div>
-                          <h3 className="font-semibold text-slate-900 text-lg">{lawyer.lawyer_name}</h3>
-                          <div className="flex items-center gap-3 text-sm text-slate-500 mt-1">
-                            <span className="flex items-center gap-1"><Star size={14} className="text-amber-400 fill-amber-400" />{lawyer.rating}</span>
-                            <span className="flex items-center gap-1"><Mail size={14} />{lawyer.contact_email}</span>
+                        <div className="flex flex-wrap items-center gap-4 text-sm text-slate-500 mt-1">
+                            {/* Rating */}
+                            <span className="flex items-center gap-1">
+                              <Star size={14} className="text-amber-400 fill-amber-400" />
+                              {lawyer.rating}
+                            </span>
+                            
+                            {/* NEW: Hourly Rate */}
+                            <span className="flex items-center gap-1 font-medium text-slate-700 bg-green-50 px-2 py-0.5 rounded-md border border-green-100">
+                              <Banknote size={14} className="text-green-600" />
+                              ${lawyer.hourly_rate}/hr
+                            </span>
+                            
+                            {/* Email */}
+                            <span className="flex items-center gap-1">
+                              <Mail size={14} />
+                              {lawyer.contact_email}
+                            </span>
                           </div>
-                        </div>
                       </div>
                       <button 
                         onClick={() => setSelectedLawyer(lawyer)}

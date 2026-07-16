@@ -24,6 +24,7 @@ You must respond STRICTLY in valid JSON format matching this exact structure:
   "category": "String (Must be one of the available categories)",
   "confidence_score": 0.0 (Float between 0 and 1),
   "reasoning": "String (Brief explanation of why this category fits)"
+  
 }
 
 Example:

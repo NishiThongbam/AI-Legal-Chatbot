@@ -18,7 +18,8 @@ import io
 # Local database and AI tools
 from sqlalchemy.orm import Session
 from database import get_db
-from models import Lawyer
+from models import Lawyer, RequiredDocument
+
 
 # Calendar
 from datetime import datetime, timedelta, timezone
@@ -207,36 +208,50 @@ async def schedule_consultation(request: ScheduleRequest):
 @app.post("/api/intake")
 async def process_intake(request: IntakeRequest, db: Session = Depends(get_db)):
     try:
-        # 1. Send the user's message to Groq to figure out the legal category
-        classification = classify_legal_issue(request.user_message)
+        # 1. AI detects the category
+        classification = classify_legal_issue(request.user_message) # (or document_prompt)
         category = classification.get("category", "General")
         reasoning = classification.get("reasoning", "Standard routing applied.")
 
-        # 2. Fetch the cheapest lawyers in the detected category from PostgreSQL
+        # 2. NEW: Query the database for exact required documents
+        db_docs = db.query(RequiredDocument).filter(RequiredDocument.category == category).all()
+        
+        # 3. Extract just the names into a list
+        required_docs = [doc.document_name for doc in db_docs]
+        
+        # Fallback to "General" if the AI returns a weird category that isn't in our DB
+        if len(required_docs) == 0:
+            db_docs = db.query(RequiredDocument).filter(RequiredDocument.category == "General").all()
+            required_docs = [doc.document_name for doc in db_docs]
+
+        # 4. Fetch the lawyers as usual
         lawyers = (
             db.query(Lawyer)
             .filter(Lawyer.specialization == category)
-            .order_by(Lawyer.hourly_rate.asc()) # SORTS CHEAPEST TO MOST EXPENSIVE
+            .order_by(Lawyer.hourly_rate.asc())
             .limit(3)
             .all()
         )
 
-        # 3. Format the database results for the React frontend
         lawyer_list = [
             {
                 "lawyer_name": l.name, 
                 "contact_email": l.email, 
                 "rating": l.rating,
-                "hourly_rate": l.hourly_rate # Include price for the UI
+                "hourly_rate": l.hourly_rate
             } 
             for l in lawyers
         ]
 
+        # 5. Return the payload to React
         return {
             "detected_category": category,
             "reasoning": reasoning,
+            "required_documents": required_docs,
             "recommended_lawyers": lawyer_list
         }
+    
+
     except Exception as e:
         print("\n--- ERROR DETAILS ---")
         traceback.print_exc() # This forces the terminal to print the exact line that crashed!
@@ -265,13 +280,10 @@ async def upload_document(file: UploadFile = File(...), db: Session = Depends(ge
                         extracted_text += text + "\n"
             
             # Attempt B: OCR Fallback (If the PDF was just a scanned image)
-            # If standard extraction found less than 50 characters, it's likely a scan.
             if len(extracted_text.strip()) < 50:
                 print("No digital text found. Activating OCR Fallback...")
-                # Convert PDF pages to images
                 images = convert_from_bytes(file_content)
                 for image in images:
-                    # Run Tesseract OCR on each image page
                     extracted_text += pytesseract.image_to_string(image) + "\n"
 
         # 3. DIRECT IMAGE PROCESSING
@@ -286,12 +298,22 @@ async def upload_document(file: UploadFile = File(...), db: Session = Depends(ge
              
         truncated_text = extracted_text[:3000]
 
-        # 5. Route to AI as usual
+        # 5. Route to AI[cite: 1]
         document_prompt = f"I am uploading a legal document. Here is the text: \n\n{truncated_text}\n\nPlease analyze this document and categorize my legal issue."
         classification = classify_legal_issue(document_prompt)
         category = classification.get("category", "General")
         reasoning = classification.get("reasoning", "Analyzed via document upload.")
 
+        # 6. NEW: Query the database for exact required documents
+        db_docs = db.query(RequiredDocument).filter(RequiredDocument.category == category).all()
+        required_docs = [doc.document_name for doc in db_docs]
+        
+        # Fallback to "General" if the AI returns a category not in our DB
+        if len(required_docs) == 0:
+            db_docs = db.query(RequiredDocument).filter(RequiredDocument.category == "General").all()
+            required_docs = [doc.document_name for doc in db_docs]
+
+        # 7. Fetch the cheapest lawyers based on the document's category[cite: 1]
         lawyers = (
             db.query(Lawyer)
             .filter(Lawyer.specialization == category)
@@ -310,9 +332,11 @@ async def upload_document(file: UploadFile = File(...), db: Session = Depends(ge
             for l in lawyers
         ]
 
+        # 8. Return the combined payload (now including required_documents!)
         return {
             "detected_category": category,
             "reasoning": f"Based on the uploaded document '{file.filename}', {reasoning}",
+            "required_documents": required_docs,
             "recommended_lawyers": lawyer_list
         }
 
@@ -320,3 +344,55 @@ async def upload_document(file: UploadFile = File(...), db: Session = Depends(ge
         import traceback
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"Error processing document: {str(e)}")
+    
+
+
+    
+
+@app.get("/api/appointments")
+async def get_user_appointments(email: str):
+    try:
+        service = get_calendar_service()
+        if not service:
+            raise HTTPException(status_code=500, detail="Google Calendar service is unavailable.")
+        
+        calendar_id = '963fdeecafdfdf5078c33ae67966fec8d4264ffa7069698c1cd9fa30ea381b35@group.calendar.google.com'
+        
+        # Define current time in IST to only fetch upcoming appointments
+        IST = timezone(timedelta(hours=5, minutes=30))
+        now = datetime.now(IST).isoformat()
+        
+        # Query Google Calendar. The 'q' parameter searches summaries and descriptions!
+        events_result = service.events().list(
+            calendarId=calendar_id, 
+            timeMin=now,
+            q=email, 
+            singleEvents=True,
+            orderBy='startTime'
+        ).execute()
+        
+        events = events_result.get('items', [])
+        appointments = []
+        
+        for event in events:
+            # Double-check that the email is actually in the description to prevent false matches
+            if email.lower() in event.get('description', '').lower():
+                
+                # Parse the start time back into a readable format
+                start_str = event['start'].get('dateTime', event['start'].get('date'))
+                start_dt = datetime.fromisoformat(start_str)
+                
+                appointments.append({
+                    "id": event['id'],
+                    "lawyer_name": event['summary'].replace("LegalConnect Consultation: ", ""),
+                    "date": start_dt.strftime("%b %d, %Y"),
+                    "time": start_dt.strftime("%I:%M %p").lstrip("0"),
+                    "meet_link": event.get('location', "Link pending")
+                })
+                
+        return {"appointments": appointments}
+
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
