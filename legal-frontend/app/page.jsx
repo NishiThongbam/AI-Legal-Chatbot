@@ -11,11 +11,8 @@ import {
   onAuthStateChanged, 
   signOut 
 } from 'firebase/auth';
-// NEW: Import Firebase Storage tools
 
-
-
-import BookingInterface from "./BookingInterface"
+import BookingInterface from "./BookingInterface";
 
 const firebaseConfig = {
   apiKey: process.env.NEXT_PUBLIC_FIREBASE_API_KEY,
@@ -28,7 +25,6 @@ const firebaseConfig = {
 
 const firebaseApp = !getApps().length ? initializeApp(firebaseConfig) : getApp();
 const auth = getAuth(firebaseApp);
-// NEW: Initialize Storage
 const storage = getStorage(firebaseApp);
 
 export default function App() {
@@ -62,15 +58,10 @@ export default function App() {
   const [availableSlots, setAvailableSlots] = useState([]);
   const [isLoadingSlots, setIsLoadingSlots] = useState(false);
 
-
   // --- APPOINTMENTS STATE ---
   const [isAppointmentsOpen, setIsAppointmentsOpen] = useState(false);
   const [userAppointments, setUserAppointments] = useState([]);
   const [isLoadingAppointments, setIsLoadingAppointments] = useState(false);
-
-
-
-
 
   // --- VAULT STATE ---
   const [isVaultOpen, setIsVaultOpen] = useState(false);
@@ -78,27 +69,19 @@ export default function App() {
   const [isLoadingVault, setIsLoadingVault] = useState(false);
   const [deletingDocId, setDeletingDocId] = useState(null);
 
-  
-
-
   // --- HANDLER: Fetch User Documents ---
   const handleOpenVault = async () => {
     setIsVaultOpen(true);
     setIsLoadingVault(true);
     
     try {
-      // 1. Point Firebase to the user's specific folder
       const folderRef = ref(storage, `users/${user.uid}/documents`);
-      
-      // 2. Get a list of all files in that folder
       const response = await listAll(folderRef);
       
-      // 3. Loop through the files to get their URLs and dates
       const docs = await Promise.all(response.items.map(async (itemRef) => {
         const url = await getDownloadURL(itemRef);
         const metadata = await getMetadata(itemRef);
         
-        // Remove the timestamp prefix we added during upload for a cleaner display name
         const cleanName = itemRef.name.split('_').slice(1).join('_') || itemRef.name;
         
         return {
@@ -116,7 +99,6 @@ export default function App() {
         };
       }));
       
-      // Sort newest to oldest
       setUserDocuments(docs.sort((a, b) => new Date(b.date) - new Date(a.date)));
     } catch (error) {
       console.error("Error fetching vault documents:", error);
@@ -125,13 +107,12 @@ export default function App() {
     }
   };
 
-// --- HANDLER: Fetch User Appointments ---
+  // --- HANDLER: Fetch User Appointments ---
   const handleOpenAppointments = async () => {
     setIsAppointmentsOpen(true);
     setIsLoadingAppointments(true);
     
     try {
-      // Send the user's email to the Python backend to search Google Calendar
       const response = await fetch(`http://127.0.0.1:8000/api/appointments?email=${encodeURIComponent(user.email)}`);
       
       if (response.ok) {
@@ -147,18 +128,13 @@ export default function App() {
 
   // --- HANDLER: Delete User Document ---
   const handleDeleteDocument = async (fileName) => {
-    // 1. Confirm with the user before permanently deleting
     if (!window.confirm("Are you sure you want to permanently delete this document?")) return;
 
     setDeletingDocId(fileName);
     try {
-      // 2. Point Firebase to the exact file
       const fileRef = ref(storage, `users/${user.uid}/documents/${fileName}`);
-      
-      // 3. Delete from Firebase
       await deleteObject(fileRef);
 
-      // 4. Instantly remove it from the React UI without needing to refresh
       setUserDocuments((prevDocs) => prevDocs.filter((doc) => doc.id !== fileName));
     } catch (error) {
       console.error("Error deleting document:", error);
@@ -167,9 +143,6 @@ export default function App() {
       setDeletingDocId(null);
     }
   };
-
-
-
 
   // --- EFFECT: Listen for User Login/Logout ---
   useEffect(() => {
@@ -217,7 +190,7 @@ export default function App() {
     }
   };
 
-// --- HANDLER: Document Upload with Secure Storage & Duplicate Check ---
+  // --- HANDLER: Document Upload with Secure Storage & Duplicate Check ---
   const handleFileUpload = async (e) => {
     const file = e.target.files[0];
     if (!file || !user) return;
@@ -228,8 +201,6 @@ export default function App() {
       return;
     }
 
-
-    // 2. NEW: FILE SIZE CHECK (5MB Limit)
     const MAX_FILE_SIZE_MB = 5;
     const MAX_FILE_SIZE_BYTES = MAX_FILE_SIZE_MB * 1024 * 1024;
     
@@ -241,37 +212,29 @@ export default function App() {
 
     setIsLoading(true);
 
-    setIsLoading(true);
-
     try {
-      // 1. DUPLICATE CHECK: Scan the user's vault before uploading
       const folderRef = ref(storage, `users/${user.uid}/documents`);
       const existingFiles = await listAll(folderRef);
       
       const isDuplicate = existingFiles.items.some((itemRef) => {
-        // We saved files as "123456789_filename.pdf". 
-        // This cuts off the timestamp prefix to get the original name.
         const originalName = itemRef.name.substring(itemRef.name.indexOf('_') + 1);
         return originalName === file.name;
       });
 
       if (isDuplicate) {
-        // Cancel the upload and alert the user in the chat
         setMessages((prev) => [...prev, {
           id: Date.now(),
           role: 'bot',
           type: 'text',
           content: `⚠️ Upload canceled. A document named "${file.name}" already exists in your vault. Please rename the file if this is a new document, or check your vault to view the existing one.`
         }]);
-        return; // Exits the function early to stop the upload!
+        return;
       }
 
-      // 2. SECURE STORAGE: Proceed with uploading to Firebase
       const fileRef = ref(storage, `users/${user.uid}/documents/${Date.now()}_${file.name}`);
       await uploadBytes(fileRef, file);
       const downloadURL = await getDownloadURL(fileRef);
 
-      // 3. Add the document message to the chat UI
       const newUserMsg = { 
         id: Date.now(), 
         role: 'user', 
@@ -281,7 +244,6 @@ export default function App() {
       };
       setMessages((prev) => [...prev, newUserMsg]);
 
-      // 4. AI ANALYSIS: Send the raw file to your Python backend
       const formData = new FormData();
       formData.append('file', file);
 
@@ -294,9 +256,10 @@ export default function App() {
       const data = await response.json();
 
       const botTextMsg = { id: Date.now() + 1, role: 'bot', type: 'text', content: data.reasoning };
-      const botLawyerMsg = { id: Date.now() + 2, role: 'bot', type: 'lawyers', lawyers: data.recommended_lawyers, category: data.detected_category };
+      const botChecklistMsg = { id: Date.now() + 2, role: 'bot', type: 'checklist', documents: data.required_documents || [] };
+      const botLawyerMsg = { id: Date.now() + 3, role: 'bot', type: 'lawyers', lawyers: data.recommended_lawyers, category: data.detected_category };
 
-      setMessages((prev) => [...prev, botTextMsg, botLawyerMsg]);
+      setMessages((prev) => [...prev, botTextMsg, botChecklistMsg, botLawyerMsg]);
 
     } catch (error) {
       console.error("Upload error:", error);
@@ -332,9 +295,10 @@ export default function App() {
       const data = await response.json();
 
       const botTextMsg = { id: Date.now() + 1, role: 'bot', type: 'text', content: `Based on your description, this sounds like an issue related to ${data.detected_category}. ${data.reasoning}` };
-      const botLawyerMsg = { id: Date.now() + 2, role: 'bot', type: 'lawyers', lawyers: data.recommended_lawyers, category: data.detected_category };
+      const botChecklistMsg = { id: Date.now() + 2, role: 'bot', type: 'checklist', documents: data.required_documents || [] };
+      const botLawyerMsg = { id: Date.now() + 3, role: 'bot', type: 'lawyers', lawyers: data.recommended_lawyers, category: data.detected_category };
 
-      setMessages((prev) => [...prev, botTextMsg, botLawyerMsg]);
+      setMessages((prev) => [...prev, botTextMsg, botChecklistMsg, botLawyerMsg]);
 
     } catch (error) {
       setMessages((prev) => [...prev, { id: Date.now() + 1, role: 'bot', type: 'text', content: 'Sorry, I am having trouble connecting to the legal database right now. Please try again later.' }]);
@@ -343,8 +307,7 @@ export default function App() {
     }
   };
 
-
-useEffect(() => {
+  useEffect(() => {
     if (!scheduleDate) {
       setAvailableSlots([]);
       return;
@@ -367,8 +330,6 @@ useEffect(() => {
 
     fetchAvailability();
   }, [scheduleDate]);
-
-
 
   // --- HANDLER: Book Consultation ---
   const handleScheduleSubmit = async (e) => {
@@ -520,7 +481,6 @@ useEffect(() => {
                         {isLoadingSlots ? "Loading slots..." : !scheduleDate ? "Select a date first" : availableSlots.length === 0 ? "No slots available" : "Choose a time slot"}
                       </option>
                       
-                      {/* Dynamically map the live slots from Python! */}
                       {availableSlots.map((slot) => (
                         <option key={slot} value={slot}>
                           {slot}
@@ -544,7 +504,6 @@ useEffect(() => {
           </div>
         </div>
       )}
-
 
       {/* VAULT MODAL */}
       {isVaultOpen && (
@@ -583,14 +542,12 @@ useEffect(() => {
                         </div>
                         <div className="truncate">
                           <p className="font-medium text-slate-900 truncate" title={doc.name}>{doc.name}</p>
-                          {/* UPDATED: Emphasized Submission Date/Time */}
                           <p className="text-xs font-medium text-slate-500 mt-0.5">
                             Submitted: <span className="text-slate-700">{doc.date}</span>
                           </p>
                         </div>
                       </div>
                       
-                      {/* ACTION BUTTONS */}
                       <div className="flex-shrink-0 flex items-center gap-2">
                         <a 
                           href={doc.url} 
@@ -601,7 +558,6 @@ useEffect(() => {
                           View
                         </a>
                         
-                        {/* NEW: Delete Button */}
                         <button 
                           onClick={() => handleDeleteDocument(doc.id)}
                           disabled={deletingDocId === doc.id}
@@ -624,7 +580,6 @@ useEffect(() => {
           </div>
         </div>
       )}
-
 
       {/* APPOINTMENTS MODAL */}
       {isAppointmentsOpen && (
@@ -686,7 +641,6 @@ useEffect(() => {
         </div>
       )}
 
-
       {/* Header */}
       <header className="bg-slate-900 text-white p-4 shadow-md flex items-center justify-between z-10">
         <div className="flex items-center gap-2">
@@ -699,11 +653,9 @@ useEffect(() => {
                 <Paperclip size={16} /><span>My Vault</span>
             </button>
 
-            {/* NEW APPOINTMENTS BUTTON */}
             <button onClick={handleOpenAppointments} className="flex items-center gap-2 bg-slate-800 hover:bg-slate-700 px-3 py-1.5 rounded-lg border border-slate-700 transition-colors text-sm font-medium">
                 <CalendarDays size={16} /><span>Appointments</span>
             </button>
-
 
             <button onClick={handleLogout} className="flex items-center gap-2 bg-slate-800 hover:bg-slate-700 px-3 py-1.5 rounded-lg border border-slate-700 transition-colors text-sm">
                 <LogOut size={16} /><span>Logout</span>
@@ -728,7 +680,7 @@ useEffect(() => {
               </div>
             )}
 
-            {/* Document Upload Message (NEW) */}
+            {/* Document Upload Message */}
             {msg.type === 'document' && (
               <div className={`flex items-end gap-2 max-w-[85%] flex-row-reverse`}>
                 <div className={`flex-shrink-0 w-8 h-8 rounded-full flex items-center justify-center shadow-sm bg-blue-600 text-white`}>
@@ -744,6 +696,35 @@ useEffect(() => {
                    <p className="text-xs text-blue-200 mt-1 flex items-center gap-1">
                      <CheckCircle size={12} /> Saved securely to your vault
                    </p>
+                </div>
+              </div>
+            )}
+
+            {/* Document Checklist Message */}
+            {msg.type === 'checklist' && msg.documents.length > 0 && (
+              <div className="mt-2 ml-10 w-full max-w-2xl bg-blue-50/50 border border-blue-100 p-5 rounded-xl shadow-sm">
+                <div className="flex items-center gap-2 text-blue-800 font-semibold mb-3">
+                  <Paperclip size={18} />
+                  <h4>Required Documents to Upload</h4>
+                </div>
+                
+                <ul className="space-y-2 mb-4">
+                  {msg.documents.map((doc, idx) => (
+                    <li key={idx} className="flex items-start gap-2 text-sm text-slate-700 bg-white p-2.5 rounded-lg border border-slate-200">
+                      <div className="mt-0.5 text-blue-500"><CheckCircle size={14} /></div>
+                      <span className="font-medium">{doc}</span>
+                    </li>
+                  ))}
+                </ul>
+                
+                <div className="flex justify-between items-center text-xs">
+                    <span className="text-slate-500">Securely store these in your vault for your consultation.</span>
+                    <button 
+                      onClick={() => fileInputRef.current?.click()} 
+                      className="bg-blue-600 text-white px-4 py-2 rounded-lg font-medium hover:bg-blue-700 transition-colors shadow-sm"
+                    >
+                      Upload File
+                    </button>
                 </div>
               </div>
             )}
@@ -766,7 +747,7 @@ useEffect(() => {
                               {lawyer.rating}
                             </span>
                             
-                            {/* NEW: Hourly Rate */}
+                            {/* Hourly Rate */}
                             <span className="flex items-center gap-1 font-medium text-slate-700 bg-green-50 px-2 py-0.5 rounded-md border border-green-100">
                               <Banknote size={14} className="text-green-600" />
                               ${lawyer.hourly_rate}/hr
@@ -825,9 +806,6 @@ useEffect(() => {
         </form>
         <p className="text-center text-xs text-slate-400 mt-3">This AI assistant routes your inquiry but does not provide official legal advice.</p>
       </footer>
-
-        
-
 
     </div>
   );

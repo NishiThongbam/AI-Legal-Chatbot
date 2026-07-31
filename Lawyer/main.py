@@ -52,6 +52,10 @@ class ScheduleRequest(BaseModel):
     date: str  # Format from React: "YYYY-MM-DD"
     time: str  # Format from React: "HH:MM AM/PM" (e.g., "1:00 PM")
 
+
+
+
+
 # 2. Authenticate with Google using your service_account.json
 SCOPES = ['https://www.googleapis.com/auth/calendar']
 SERVICE_ACCOUNT_FILE = r'D:\Project\Lawyer\service_account.json'
