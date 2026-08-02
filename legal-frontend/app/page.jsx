@@ -36,7 +36,12 @@ export default function App() {
   const [password, setPassword] = useState('');
   const [authError, setAuthError] = useState('');
 
-  // --- CHAT STATE ---
+
+// --- CHAT STATE1 --- ///
+  const [chatMode, setChatMode] = useState('intake');
+
+
+  // --- CHAT STATE2 ---
   const [messages, setMessages] = useState([
     {
       id: 1,
@@ -315,7 +320,7 @@ export default function App() {
     }
   };
 
-  // --- HANDLER: Send Chat Message ---
+  /// --- HANDLER: Send Chat Message ---
   const handleSendMessage = async (e) => {
     e.preventDefault();
     if (!inputValue.trim()) return;
@@ -328,23 +333,54 @@ export default function App() {
     setIsLoading(true);
 
     try {
-      const response = await fetch('http://127.0.0.1:8000/api/intake', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ user_message: userText }),
-      });
+      // NEW: Branch logic based on chat mode
+      if (chatMode === 'general') {
+        
+        // 1. Create the "Short-Term Memory"
+        // We filter for 'text' only so we don't accidentally send the AI its own UI checklists or lawyer objects
+        const shortTermMemory = messages
+            .filter(msg => msg.type === 'text')
+            .slice(-4) // Only grab the last 4 messages ("not a lot")
+            .map(msg => ({
+                role: msg.role === 'bot' ? 'assistant' : 'user',
+                content: msg.content
+            }));
 
-      if (!response.ok) throw new Error('Network response was not ok');
-      const data = await response.json();
+        // 2. Send the new message PLUS the memory
+        const response = await fetch('http://127.0.0.1:8000/api/chat', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ 
+              user_message: userText,
+              history: shortTermMemory
+          }),
+        });
 
-      const botTextMsg = { id: Date.now() + 1, role: 'bot', type: 'text', content: `Based on your description, this sounds like an issue related to ${data.detected_category}. ${data.reasoning}` };
-      const botChecklistMsg = { id: Date.now() + 2, role: 'bot', type: 'checklist', documents: data.required_documents || [] };
-      const botLawyerMsg = { id: Date.now() + 3, role: 'bot', type: 'lawyers', lawyers: data.recommended_lawyers, category: data.detected_category };
+        if (!response.ok) throw new Error('Network response was not ok');
+        const data = await response.json();
 
-      setMessages((prev) => [...prev, botTextMsg, botChecklistMsg, botLawyerMsg]);
+        setMessages((prev) => [...prev, { id: Date.now() + 1, role: 'bot', type: 'text', content: data.reply }]);
+        
+      } else {
+        // EXISTING: Intake Routing Logic
+        const response = await fetch('http://127.0.0.1:8000/api/intake', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ user_message: userText }),
+        });
+
+        if (!response.ok) throw new Error('Network response was not ok');
+        const data = await response.json();
+
+        const botTextMsg = { id: Date.now() + 1, role: 'bot', type: 'text', content: `Based on your description, this sounds like an issue related to ${data.detected_category}. ${data.reasoning}` };
+        const botChecklistMsg = { id: Date.now() + 2, role: 'bot', type: 'checklist', documents: data.required_documents || [] };
+        const botLawyerMsg = { id: Date.now() + 3, role: 'bot', type: 'lawyers', lawyers: data.recommended_lawyers, category: data.detected_category };
+
+        setMessages((prev) => [...prev, botTextMsg, botChecklistMsg, botLawyerMsg]);
+      }
 
     } catch (error) {
-      setMessages((prev) => [...prev, { id: Date.now() + 1, role: 'bot', type: 'text', content: 'Sorry, I am having trouble connecting to the legal database right now. Please try again later.' }]);
+      setMessages((prev) => [...prev, { id: Date.now() + 1, role: 'bot', type: 'text', content: 'Sorry, I am having trouble connecting to the database right now. Please try again later.' }]);
     } finally {
       setIsLoading(false);
     }
@@ -690,6 +726,23 @@ export default function App() {
           <Scale size={24} className="text-blue-400" />
           <h1 className="text-xl font-semibold tracking-wide">LegalConnect Intake</h1>
         </div>
+
+        {/* NEW: Chat Mode Toggle */}
+          <div className="flex bg-slate-800 rounded-lg p-1 border border-slate-700">
+            <button 
+              onClick={() => setChatMode('intake')}
+              className={`px-3 py-1.5 rounded-md text-sm font-medium transition-colors ${chatMode === 'intake' ? 'bg-blue-600 text-white shadow-sm' : 'text-slate-400 hover:text-slate-200'}`}
+            >
+              Booking
+            </button>
+            <button 
+              onClick={() => setChatMode('general')}
+              className={`px-3 py-1.5 rounded-md text-sm font-medium transition-colors ${chatMode === 'general' ? 'bg-blue-600 text-white shadow-sm' : 'text-slate-400 hover:text-slate-200'}`}
+            >
+              General Chat
+            </button>
+          </div>
+        
         <div className="flex items-center gap-4">
             <div className="text-sm text-slate-300 hidden sm:block">{user.email}</div>
             <button onClick={handleOpenVault} className="flex items-center gap-2 bg-blue-600 hover:bg-blue-700 px-3 py-1.5 rounded-lg transition-colors text-sm font-medium">

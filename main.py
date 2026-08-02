@@ -2,6 +2,8 @@
 from fastapi import FastAPI, File, UploadFile, HTTPException, Depends, APIRouter, Form
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
+from typing import List
+
 
 from legal_router import classify_legal_issue
 
@@ -33,6 +35,13 @@ pytesseract.pytesseract.tesseract_cmd = r'C:\Program Files\Tesseract-OCR\tessera
 
 app = FastAPI()
 
+
+import os
+from dotenv import load_dotenv
+from groq import Groq
+load_dotenv()
+client = Groq(api_key=os.getenv("GROQ_API_KEY"))
+
 # Allow your Next.js frontend to talk to this backend
 app.add_middleware(
     CORSMiddleware,
@@ -53,7 +62,15 @@ class ScheduleRequest(BaseModel):
     time: str  # Format from React: "HH:MM AM/PM" (e.g., "1:00 PM")
 
 
+# 1. Define what a single history message looks like
+class HistoryMessage(BaseModel):
+    role: str
+    content: str
 
+# 2. Update the request to accept the history array
+class ChatRequest(BaseModel):
+    user_message: str
+    history: List[HistoryMessage] = []
 
 
 # 2. Authenticate with Google using your service_account.json
@@ -69,6 +86,48 @@ def get_calendar_service():
     except Exception as e:
         print(f"Failed to authenticate with Google: {str(e)}")
         return None
+
+
+
+@app.post("/api/chat")
+async def general_chat(request: ChatRequest):
+    try:
+        # 1. Set up the System Instructions
+        messages_for_ai = [
+            {
+                "role": "system",
+                "content": (
+                    "You are a helpful, professional legal AI assistant. "
+                    "Answer the user's general legal question clearly and concisely. "
+                    "Always include a disclaimer that you are an AI and not providing official legal advice."
+                )
+            }
+        ]
+
+        # 2. Inject the Short-Term Memory
+        for msg in request.history:
+            messages_for_ai.append({"role": msg.role, "content": msg.content})
+
+        # 3. Append the brand new question
+        messages_for_ai.append({"role": "user", "content": request.user_message})
+
+        # 4. Make the blazing fast Groq API call using the client we defined at the top
+        completion = client.chat.completions.create(
+            model="llama-3.3-70b-versatile", # <-- Update this exact line
+            messages=messages_for_ai, # type: ignore
+            temperature=0.5,
+            max_tokens=1024,
+        )
+        
+        # 5. Extract the text
+        ai_reply = completion.choices[0].message.content
+        
+        return {"reply": ai_reply}
+            
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
     
 
 @app.get("/api/availability")
