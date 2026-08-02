@@ -15,33 +15,34 @@ def initialize_database():
     )
     cursor = conn.cursor()
 
-    # 1. Create table (PostgreSQL uses SERIAL for autoincrement)
+    # 1. Create table with the new hourly_rate column
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS lawyers (
             id SERIAL PRIMARY KEY,
             name VARCHAR(255) NOT NULL,
             email VARCHAR(255) NOT NULL,
             specialization VARCHAR(255) NOT NULL,
-            rating NUMERIC(3, 2)
+            rating NUMERIC(3, 2),
+            hourly_rate INTEGER
         )
     """)
 
     # 2. Clear old data
-    cursor.execute("TRUNCATE TABLE lawyers RESTART IDENTITY")
+    cursor.execute("TRUNCATE TABLE lawyers RESTART IDENTITY CASCADE")
 
-    # 3. Seed data
+    # 3. Seed data with standard hourly rates included
     lawyers_data = [
-        ("Sarah Jenkins", "sarah@legal.com", "Property & Real Estate Law", 4.9),
-        ("David Chen", "dchen@legal.com", "Property & Real Estate Law", 4.7),
-        ("Marcus Rossi", "rossi@legal.com", "Labor & Employment Law", 4.8),
-        ("Elena Smith", "elena@legal.com", "Family Law", 4.9),
-        ("Arthur Pendelton", "arthur@legal.com", "Civil Litigation", 4.5)
+        ("Sarah Jenkins", "sarah@legal.com", "Property & Real Estate Law", 4.9, 250),
+        ("David Chen", "dchen@legal.com", "Property & Real Estate Law", 4.7, 200),
+        ("Marcus Rossi", "rossi@legal.com", "Labor & Employment Law", 4.8, 300),
+        ("Elena Smith", "elena@legal.com", "Family Law", 4.9, 225),
+        ("Arthur Pendelton", "arthur@legal.com", "Civil Litigation", 4.5, 175)
     ]
 
-    # NOTE: PostgreSQL uses %s placeholders instead of SQLite's ?
+    # 4. Insert data using 5 placeholders (%s)
     cursor.executemany("""
-        INSERT INTO lawyers (name, email, specialization, rating) 
-        VALUES (%s, %s, %s, %s)
+        INSERT INTO lawyers (name, email, specialization, rating, hourly_rate) 
+        VALUES (%s, %s, %s, %s, %s)
     """, lawyers_data)
 
     conn.commit()

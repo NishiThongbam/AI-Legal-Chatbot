@@ -1,5 +1,5 @@
 # API and LLM
-from fastapi import FastAPI, File, UploadFile, HTTPException, Depends
+from fastapi import FastAPI, File, UploadFile, HTTPException, Depends, APIRouter, Form
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
@@ -58,7 +58,7 @@ class ScheduleRequest(BaseModel):
 
 # 2. Authenticate with Google using your service_account.json
 SCOPES = ['https://www.googleapis.com/auth/calendar']
-SERVICE_ACCOUNT_FILE = r'D:\Project\Lawyer\service_account.json'
+SERVICE_ACCOUNT_FILE = r'service_account.json'
 
 def get_calendar_service():
     try:
@@ -399,4 +399,40 @@ async def get_user_appointments(email: str):
     except Exception as e:
         import traceback
         traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+
+@app.post("/verify-document")
+async def verify_document(
+    file: UploadFile = File(...),
+    expected_type: str = Form(...)
+):
+    try:
+        # 1. Read the file into memory
+        file_bytes = await file.read()
+        
+        # 2. Construct a strict, localized prompt for the AI
+        # This explicitly forbids the AI from generating lawyer recommendations
+        prompt = (
+            f"You are a strict legal document classifier. "
+            f"The user uploaded a document that must be a '{expected_type}'. "
+            f"Analyze the document. If it belongs to this category, respond with exactly the word 'TRUE'. "
+            f"If it does not match, respond with exactly the word 'FALSE'."
+        )
+        
+        # 3. Call your AI model (Assuming you are using a vision model like Gemini or GPT-4o)
+        # response = your_ai_model.generate_content([prompt, file_bytes])
+        # ai_decision = response.text.strip().upper()
+        
+        # Mocking the AI decision logic for demonstration
+        ai_decision = "TRUE" # Replace with actual AI output
+        
+        # 4. Process the logical condition
+        if "TRUE" in ai_decision:
+            return {"verified": True, "document": expected_type}
+        else:
+            return {"verified": False, "document": expected_type}
+            
+    except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))

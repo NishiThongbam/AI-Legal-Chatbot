@@ -1,7 +1,7 @@
 "use client";
 
 import React, { useState, useRef, useEffect } from 'react';
-import { Send, User, Scale, Briefcase, Star, Mail, Loader2, LogOut, Lock, Paperclip, Calendar, Clock, CheckCircle, X, Trash2, CalendarDays, Video, Banknote } from 'lucide-react';
+import { Send, User, Scale, Briefcase, Star, Mail, Loader2, LogOut, Lock, Paperclip, Calendar, Clock, CheckCircle, X, Trash2, CalendarDays, Video, Banknote, UploadCloud } from 'lucide-react';
 import { getStorage, ref, uploadBytes, getDownloadURL, listAll, getMetadata, deleteObject } from 'firebase/storage';
 import { initializeApp, getApps, getApp } from "firebase/app";
 import { 
@@ -49,6 +49,9 @@ export default function App() {
   const [isLoading, setIsLoading] = useState(false);
   const fileInputRef = useRef(null);
   const messagesEndRef = useRef(null);
+  
+  // NEW: State for tracking individual required document verification
+  const [docStatuses, setDocStatuses] = useState({});
 
   // --- SCHEDULING STATE ---
   const [selectedLawyer, setSelectedLawyer] = useState(null); 
@@ -187,6 +190,46 @@ export default function App() {
       }]);
     } catch (error) {
       console.error("Logout Error:", error);
+    }
+  };
+
+  // --- HANDLER: Specific Document Verification & Upload ---
+  const handleSpecificDocumentUpload = async (e, expectedType) => {
+    const file = e.target.files[0];
+    if (!file || !user) return;
+
+    // 1. Mark this specific document as uploading in the UI
+    setDocStatuses(prev => ({ ...prev, [expectedType]: 'uploading' }));
+
+    const formData = new FormData();
+    formData.append('file', file);
+    formData.append('expected_type', expectedType);
+
+    try {
+      // 2. Hit the isolated FastAPI verification endpoint
+      const response = await fetch('http://127.0.0.1:8000/verify-document', {
+        method: 'POST',
+        body: formData,
+      });
+
+      if (!response.ok) throw new Error('Verification request failed');
+      const data = await response.json();
+
+      if (data.verified) {
+        // 3. If the AI verifies it, securely save it to the Firebase Vault
+        const fileRef = ref(storage, `users/${user.uid}/documents/${Date.now()}_${file.name}`);
+        await uploadBytes(fileRef, file);
+
+        // 4. Update the local UI to show a green success checkmark
+        setDocStatuses(prev => ({ ...prev, [expectedType]: 'verified' }));
+      } else {
+        // AI rejected the document
+        setDocStatuses(prev => ({ ...prev, [expectedType]: 'failed' }));
+        alert(`AI Verification Failed: The file does not appear to be a ${expectedType}.`);
+      }
+    } catch (error) {
+      console.error("Upload/Verification failed:", error);
+      setDocStatuses(prev => ({ ...prev, [expectedType]: 'failed' }));
     }
   };
 
@@ -708,23 +751,48 @@ export default function App() {
                   <h4>Required Documents to Upload</h4>
                 </div>
                 
-                <ul className="space-y-2 mb-4">
+                <ul className="space-y-3 mb-4">
                   {msg.documents.map((doc, idx) => (
-                    <li key={idx} className="flex items-start gap-2 text-sm text-slate-700 bg-white p-2.5 rounded-lg border border-slate-200">
-                      <div className="mt-0.5 text-blue-500"><CheckCircle size={14} /></div>
-                      <span className="font-medium">{doc}</span>
+                    <li key={idx} className="flex items-center justify-between gap-2 text-sm text-slate-700 bg-white p-3 rounded-lg border border-slate-200 shadow-sm">
+                      <div className="flex items-center gap-2">
+                         <div className="text-blue-500"><CheckCircle size={14} /></div>
+                         <span className="font-medium">{doc}</span>
+                      </div>
+                      
+                      {/* Dynamic Status UI */}
+                      <div className="flex items-center shrink-0">
+                        {(!docStatuses[doc] || docStatuses[doc] === 'pending') && (
+                          <label className="cursor-pointer bg-blue-600 text-white px-3 py-1.5 rounded-lg font-medium hover:bg-blue-700 transition-colors text-xs flex items-center gap-1.5 shadow-sm">
+                            <UploadCloud size={14} /> Upload
+                            <input type="file" className="hidden" accept=".pdf, image/jpeg, image/png" onChange={(e) => handleSpecificDocumentUpload(e, doc)} />
+                          </label>
+                        )}
+                        
+                        {docStatuses[doc] === 'uploading' && (
+                          <span className="flex items-center gap-1.5 text-slate-500 text-xs font-medium">
+                            <Loader2 size={14} className="animate-spin text-blue-600" /> Analyzing...
+                          </span>
+                        )}
+                        
+                        {docStatuses[doc] === 'verified' && (
+                          <span className="flex items-center gap-1.5 text-green-600 text-xs font-bold bg-green-50 px-2 py-1 rounded">
+                            <CheckCircle size={16} /> Verified & Saved
+                          </span>
+                        )}
+                        
+                        {docStatuses[doc] === 'failed' && (
+                          <label className="cursor-pointer text-red-500 hover:text-red-700 text-xs font-medium underline flex items-center gap-1">
+                            <X size={14} /> Retry Upload
+                            <input type="file" className="hidden" accept=".pdf, image/jpeg, image/png" onChange={(e) => handleSpecificDocumentUpload(e, doc)} />
+                          </label>
+                        )}
+                      </div>
                     </li>
                   ))}
                 </ul>
                 
                 <div className="flex justify-between items-center text-xs">
-                    <span className="text-slate-500">Securely store these in your vault for your consultation.</span>
-                    <button 
-                      onClick={() => fileInputRef.current?.click()} 
-                      className="bg-blue-600 text-white px-4 py-2 rounded-lg font-medium hover:bg-blue-700 transition-colors shadow-sm"
-                    >
-                      Upload File
-                    </button>
+                    <span className="text-slate-500">Files verified by AI are securely saved directly to your vault.</span>
                 </div>
               </div>
             )}

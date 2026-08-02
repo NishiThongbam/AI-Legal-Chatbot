@@ -1,4 +1,26 @@
+# 1. Virtual Environments & Python Cache
 Lawyer/
-.env*
-.service_account.json
+venv/
+env/
+__pycache__/
+*.pyc
 
+# 2. Next.js / Node Frontend
+legal-frontend/node_modules/
+legal-frontend/.next/
+npm-debug.log*
+
+# 3. Environment Variables & Secrets
+.env
+.env.*
+service_account.json
+
+# 4. Local Databases
+*.sqlite3
+*.db
+
+
+
+# 6. Operating System Junk Files
+.DS_Store
+Thumbs.db
