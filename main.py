@@ -3,6 +3,12 @@ from fastapi import FastAPI, File, UploadFile, HTTPException, Depends, APIRouter
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import List
+from fastapi.responses import Response
+import qrcode
+import io
+from reportlab.pdfgen import canvas
+from reportlab.lib.pagesizes import letter
+from reportlab.lib.utils import ImageReader
 
 
 from legal_router import classify_legal_issue
@@ -73,6 +79,15 @@ class ChatRequest(BaseModel):
     history: List[HistoryMessage] = []
 
 
+class TokenRequest(BaseModel):
+    token_id: str
+    client_email: str
+    client_name: str
+    lawyer_name: str
+    date: str
+    time: str
+
+
 # 2. Authenticate with Google using your service_account.json
 SCOPES = ['https://www.googleapis.com/auth/calendar']
 SERVICE_ACCOUNT_FILE = r'service_account.json'
@@ -92,34 +107,34 @@ def get_calendar_service():
 @app.post("/api/chat")
 async def general_chat(request: ChatRequest):
     try:
-        # 1. Set up the System Instructions
+        # 1. Update system instructions to strictly enforce legal relevance
         messages_for_ai = [
             {
                 "role": "system",
                 "content": (
-                    "You are a helpful, professional legal AI assistant. "
-                    "Answer the user's general legal question clearly and concisely. "
-                    "Always include a disclaimer that you are an AI and not providing official legal advice."
+                    "You are a specialized legal AI assistant for LegalConnect. "
+                    "CRITICAL RULE: Evaluate the user's query. If the topic is unrelated to legal matters, law, contracts, regulations, or court procedures in any manner, you must refuse to answer. "
+                    "Respond with exactly this message if off-topic: 'I am programmed to assist only with legal matters. Please ask a legal question or switch to the appropriate service.' "
+                    "If the query is legal, answer clearly and concisely, and always include a disclaimer that you are an AI and not providing official legal advice."
                 )
             }
         ]
 
-        # 2. Inject the Short-Term Memory
+        # 2. Inject short-term memory history
         for msg in request.history:
             messages_for_ai.append({"role": msg.role, "content": msg.content})
 
-        # 3. Append the brand new question
+        # 3. Append the new message
         messages_for_ai.append({"role": "user", "content": request.user_message})
 
-        # 4. Make the blazing fast Groq API call using the client we defined at the top
+        # 4. Call Groq
         completion = client.chat.completions.create(
-            model="llama-3.3-70b-versatile", # <-- Update this exact line
+            model="llama-3.3-70b-versatile",
             messages=messages_for_ai, # type: ignore
-            temperature=0.5,
+            temperature=0.2, # Lower temperature makes it stricter and more consistent
             max_tokens=1024,
         )
         
-        # 5. Extract the text
         ai_reply = completion.choices[0].message.content
         
         return {"reply": ai_reply}
@@ -494,4 +509,82 @@ async def verify_document(
             return {"verified": False, "document": expected_type}
             
     except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+
+
+@app.delete("/api/appointments/{event_id}")
+async def cancel_appointment(event_id: str):
+    try:
+        service = get_calendar_service()
+        if not service:
+            raise HTTPException(status_code=500, detail="Google Calendar service is unavailable.")
+        
+        calendar_id = '963fdeecafdfdf5078c33ae67966fec8d4264ffa7069698c1cd9fa30ea381b35@group.calendar.google.com'
+        
+        # Tell Google Calendar to delete this specific event
+        service.events().delete(
+            calendarId=calendar_id, 
+            eventId=event_id
+        ).execute()
+        
+        return {"status": "success", "message": "Appointment cancelled successfully."}
+
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/generate-token")
+async def generate_token_pdf(request: TokenRequest):
+    try:
+        # 1. Generate the QR Code Image in memory
+        qr_data = (
+            f"Token: {request.token_id}\n"
+            f"Client: {request.client_email}\n"
+            f"Specialist: {request.lawyer_name}\n"
+            f"Schedule: {request.date} @ {request.time}"
+        )
+        qr = qrcode.make(qr_data)
+        qr_io = io.BytesIO()
+        qr.save(qr_io, format="PNG")
+        qr_io.seek(0)
+        qr_image = ImageReader(qr_io)
+
+        # 2. Draw the PDF Pass in memory
+        pdf_io = io.BytesIO()
+        c = canvas.Canvas(pdf_io, pagesize=letter)
+        
+        # Draw Ticket Border & Header
+        c.rect(50, 500, 500, 250) # x, y, width, height
+        c.setFont("Helvetica-Bold", 24)
+        c.drawString(70, 710, "IN-PERSON CONSULTATION PASS")
+        
+        # Draw Client & Meeting Details
+        c.setFont("Helvetica", 12)
+        c.drawString(70, 670, f"Token ID: {request.token_id}")
+        c.drawString(70, 650, f"Client Name: {request.client_name}")
+        c.drawString(70, 630, f"Client Email: {request.client_email}")
+        c.drawString(70, 610, f"Specialist: {request.lawyer_name}")
+        c.drawString(70, 590, f"Date: {request.date}")
+        c.drawString(70, 570, f"Time: {request.time}")
+        
+        # Footer text
+        c.setFont("Helvetica-Oblique", 10)
+        c.drawString(70, 530, "Please present this pass at reception upon arrival for fast-track entry.")
+
+        # Embed the QR Code on the right side of the pass
+        c.drawImage(qr_image, 400, 550, width=120, height=120)
+        
+        c.save()
+        pdf_io.seek(0)
+
+        # 3. Return the raw PDF file directly to React
+        return Response(content=pdf_io.getvalue(), media_type="application/pdf")
+        
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))

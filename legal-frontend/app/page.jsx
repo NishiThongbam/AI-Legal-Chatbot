@@ -9,7 +9,8 @@ import {
   createUserWithEmailAndPassword, 
   signInWithEmailAndPassword, 
   onAuthStateChanged, 
-  signOut 
+  signOut,
+  updateProfile 
 } from 'firebase/auth';
 
 import BookingInterface from "./BookingInterface";
@@ -32,6 +33,7 @@ export default function App() {
   const [user, setUser] = useState(null);
   const [isAuthLoading, setIsAuthLoading] = useState(true);
   const [authMode, setAuthMode] = useState('login'); 
+  const [name, setName]= useState('');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [authError, setAuthError] = useState('');
@@ -70,6 +72,7 @@ export default function App() {
   const [isAppointmentsOpen, setIsAppointmentsOpen] = useState(false);
   const [userAppointments, setUserAppointments] = useState([]);
   const [isLoadingAppointments, setIsLoadingAppointments] = useState(false);
+  const [cancelingAptId, setCancelingAptId] = useState(null);
 
   // --- VAULT STATE ---
   const [isVaultOpen, setIsVaultOpen] = useState(false);
@@ -134,6 +137,28 @@ export default function App() {
     }
   };
 
+  // --- HANDLER: Cancel User Appointment ---
+  const handleCancelAppointment = async (eventId) => {
+    if (!window.confirm("Are you sure you want to cancel this consultation? This will remove it from the lawyer's calendar.")) return;
+
+    setCancelingAptId(eventId);
+    try {
+      const response = await fetch(`http://127.0.0.1:8000/api/appointments/${eventId}`, {
+        method: 'DELETE',
+      });
+
+      if (!response.ok) throw new Error('Failed to cancel appointment');
+
+      // Instantly remove the appointment from the UI without reloading
+      setUserAppointments((prev) => prev.filter((apt) => apt.id !== eventId));
+    } catch (error) {
+      console.error("Error canceling appointment:", error);
+      alert("Failed to cancel the appointment. Please try again.");
+    } finally {
+      setCancelingAptId(null);
+    }
+  };
+
   // --- HANDLER: Delete User Document ---
   const handleDeleteDocument = async (fileName) => {
     if (!window.confirm("Are you sure you want to permanently delete this document?")) return;
@@ -174,7 +199,14 @@ export default function App() {
     setAuthError('');
     try {
       if (authMode === 'signup') {
-        await createUserWithEmailAndPassword(auth, email, password);
+        // 1. Create the user
+        const userCredential = await createUserWithEmailAndPassword(auth, email, password);
+        
+        // 2. Attach the name to their Firebase profile
+        await updateProfile(userCredential.user, { displayName: name });
+        
+        // 3. Force React to recognize the new name instantly
+        setUser({ ...userCredential.user, displayName: name });
       } else {
         await signInWithEmailAndPassword(auth, email, password);
       }
@@ -417,6 +449,7 @@ export default function App() {
     setIsScheduling(true);
 
     try {
+      // 1. Book the Google Calendar Appointment
       const response = await fetch('http://127.0.0.1:8000/api/schedule', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -429,15 +462,58 @@ export default function App() {
       });
 
       if (!response.ok) throw new Error('Failed to book appointment');
-
       const data = await response.json();
 
-      setMessages((prev) => [...prev, {
+      // 2. Generate a unique Token ID
+      const tokenId = `TOK-${new Date().getFullYear()}-${Math.random().toString(36).substring(2, 7).toUpperCase()}`;
+      const clientName = user.displayName || user.email;
+
+      // 3. Request the PDF from FastAPI
+      const tokenResponse = await fetch('http://127.0.0.1:8000/api/generate-token', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          token_id: tokenId,
+          client_email: user.email,
+          client_name: clientName,
+          lawyer_name: selectedLawyer.lawyer_name,
+          date: scheduleDate,
+          time: scheduleTime
+        }),
+      });
+
+      let downloadURL = null;
+
+      if (tokenResponse.ok) {
+         // 4. Convert the FastAPI response into a physical file and upload to Firebase Vault
+         const pdfBlob = await tokenResponse.blob();
+         const file = new File([pdfBlob], `${tokenId}_Consultation_Pass.pdf`, { type: 'application/pdf' });
+         
+         const fileRef = ref(storage, `users/${user.uid}/documents/${file.name}`);
+         await uploadBytes(fileRef, file);
+         downloadURL = await getDownloadURL(fileRef);
+      }
+
+      // 5. Update the Chat UI 
+      const successMsg = {
         id: Date.now(),
         role: 'bot',
         type: 'text',
-        content: `✅ Success! Your consultation with ${selectedLawyer.lawyer_name} is booked for ${scheduleDate} at ${scheduleTime}. \n\nHere is your meeting link: ${data.meet_link}`
-      }]);
+        content: `✅ Success! Your consultation with ${selectedLawyer.lawyer_name} is booked for ${scheduleDate} at ${scheduleTime}. \n\nVirtual Meet Link: ${data.meet_link}`
+      };
+      
+      setMessages((prev) => [...prev, successMsg]);
+
+      // If the PDF generated successfully, push it to the chat as a clickable document bubble!
+      if (downloadURL) {
+        setMessages((prev) => [...prev, {
+          id: Date.now() + 1,
+          role: 'bot',
+          type: 'document', 
+          name: "In-Person Consultation Pass.pdf",
+          url: downloadURL
+        }]);
+      }
 
       setSelectedLawyer(null);
       setScheduleDate('');
@@ -477,6 +553,21 @@ export default function App() {
           )}
 
           <form onSubmit={handleAuth} className="space-y-4">
+            {/* NEW: Only show Name field during signup */}
+            {authMode === 'signup' && (
+              <div>
+                <label className="block text-sm font-medium text-slate-700 mb-1">Full Name</label>
+                <input 
+                  type="text" 
+                  required 
+                  value={name} 
+                  onChange={(e) => setName(e.target.value)} 
+                  className="w-full border border-slate-300 rounded-lg px-4 py-2 text-black focus:ring-2 focus:ring-blue-500 focus:outline-none" 
+                  placeholder="John Doe" 
+                />
+              </div>
+            )}
+            
             <div>
               <label className="block text-sm font-medium text-slate-700 mb-1">Email Address</label>
               <input type="email" required value={email} onChange={(e) => setEmail(e.target.value)} className="w-full border border-slate-300 rounded-lg px-4 py-2 text-black focus:ring-2 focus:ring-blue-500 focus:outline-none" placeholder="you@example.com" />
@@ -701,14 +792,29 @@ export default function App() {
                           </div>
                         </div>
 
-                        <a 
-                          href={apt.meet_link} 
-                          target="_blank" 
-                          rel="noopener noreferrer"
-                          className="flex-shrink-0 flex items-center gap-2 bg-blue-600 text-white px-4 py-2.5 rounded-lg text-sm font-medium hover:bg-blue-700 transition-colors"
-                        >
-                          <Video size={16} /> Join Meet
-                        </a>
+                        <div className="flex-shrink-0 flex items-center gap-2">
+                          <a 
+                            href={apt.meet_link} 
+                            target="_blank" 
+                            rel="noopener noreferrer"
+                            className="flex items-center gap-2 bg-blue-600 text-white px-4 py-2.5 rounded-lg text-sm font-medium hover:bg-blue-700 transition-colors"
+                          >
+                            <Video size={16} /> Join Meet
+                          </a>
+                          
+                          <button 
+                            onClick={() => handleCancelAppointment(apt.id)}
+                            disabled={cancelingAptId === apt.id}
+                            className="p-2.5 text-red-500 hover:bg-red-50 hover:text-red-600 rounded-lg transition-colors disabled:opacity-50 border border-transparent hover:border-red-100"
+                            title="Cancel Appointment"
+                          >
+                            {cancelingAptId === apt.id ? (
+                              <Loader2 size={18} className="animate-spin" />
+                            ) : (
+                              <Trash2 size={18} />
+                            )}
+                          </button>
+                        </div>
                         
                       </div>
                     </div>
@@ -726,25 +832,11 @@ export default function App() {
           <Scale size={24} className="text-blue-400" />
           <h1 className="text-xl font-semibold tracking-wide">LegalConnect Intake</h1>
         </div>
-
-        {/* NEW: Chat Mode Toggle */}
-          <div className="flex bg-slate-800 rounded-lg p-1 border border-slate-700">
-            <button 
-              onClick={() => setChatMode('intake')}
-              className={`px-3 py-1.5 rounded-md text-sm font-medium transition-colors ${chatMode === 'intake' ? 'bg-blue-600 text-white shadow-sm' : 'text-slate-400 hover:text-slate-200'}`}
-            >
-              Booking
-            </button>
-            <button 
-              onClick={() => setChatMode('general')}
-              className={`px-3 py-1.5 rounded-md text-sm font-medium transition-colors ${chatMode === 'general' ? 'bg-blue-600 text-white shadow-sm' : 'text-slate-400 hover:text-slate-200'}`}
-            >
-              General Chat
-            </button>
-          </div>
         
         <div className="flex items-center gap-4">
-            <div className="text-sm text-slate-300 hidden sm:block">{user.email}</div>
+            <div className="text-sm text-slate-300 hidden sm:block font-medium">
+              {user.displayName || user.email}
+            </div>
             <button onClick={handleOpenVault} className="flex items-center gap-2 bg-blue-600 hover:bg-blue-700 px-3 py-1.5 rounded-lg transition-colors text-sm font-medium">
                 <Paperclip size={16} /><span>My Vault</span>
             </button>
@@ -858,28 +950,34 @@ export default function App() {
                   msg.lawyers.map((lawyer, idx) => (
                     <div key={idx} className="bg-white border border-slate-200 p-4 rounded-xl shadow-sm flex flex-col sm:flex-row sm:items-center justify-between gap-4 hover:shadow-md transition-shadow">
                       <div className="flex items-center gap-4">
-                        <div className="bg-blue-100 text-blue-700 p-3 rounded-full">
+                        <div className="flex-shrink-0 bg-blue-100 text-blue-700 p-3 rounded-full">
                           <Briefcase size={24} />
                         </div>
-                        <div className="flex flex-wrap items-center gap-4 text-sm text-slate-500 mt-1">
-                            {/* Rating */}
-                            <span className="flex items-center gap-1">
-                              <Star size={14} className="text-amber-400 fill-amber-400" />
-                              {lawyer.rating}
-                            </span>
-                            
-                            {/* Hourly Rate */}
-                            <span className="flex items-center gap-1 font-medium text-slate-700 bg-green-50 px-2 py-0.5 rounded-md border border-green-100">
-                              <Banknote size={14} className="text-green-600" />
-                              ${lawyer.hourly_rate}/hr
-                            </span>
-                            
-                            {/* Email */}
-                            <span className="flex items-center gap-1">
-                              <Mail size={14} />
-                              {lawyer.contact_email}
-                            </span>
-                          </div>
+                        
+                        {/* NEW: Added wrapper div and lawyer name header */}
+                        <div>
+                          <h4 className="font-semibold text-slate-900 text-base">{lawyer.lawyer_name}</h4>
+                          
+                          <div className="flex flex-wrap items-center gap-4 text-sm text-slate-500 mt-1">
+                              {/* Rating */}
+                              <span className="flex items-center gap-1">
+                                <Star size={14} className="text-amber-400 fill-amber-400" />
+                                {lawyer.rating}
+                              </span>
+                              
+                              {/* Hourly Rate */}
+                              <span className="flex items-center gap-1 font-medium text-slate-700 bg-green-50 px-2 py-0.5 rounded-md border border-green-100">
+                                <Banknote size={14} className="text-green-600" />
+                                ${lawyer.hourly_rate}/hr
+                              </span>
+                              
+                              {/* Email */}
+                              <span className="flex items-center gap-1">
+                                <Mail size={14} />
+                                {lawyer.contact_email}
+                              </span>
+                            </div>
+                        </div>
                       </div>
                       <button 
                         onClick={() => setSelectedLawyer(lawyer)}
@@ -913,19 +1011,42 @@ export default function App() {
         <div ref={messagesEndRef} />
       </main>
 
-      {/* Input Form */}
+      {/* Input Form & Mode Toggle */}
       <footer className="bg-white border-t border-slate-200 p-4">
-        <form onSubmit={handleSendMessage} className="max-w-4xl mx-auto relative flex items-center">
-          <input type="file" accept=".pdf, image/jpeg, image/jpg, image/png" ref={fileInputRef} onChange={handleFileUpload} className="hidden" />
-          <button type="button" onClick={() => fileInputRef.current?.click()} disabled={isLoading} className="absolute left-2 text-slate-400 hover:text-blue-600 p-2 rounded-full transition-colors disabled:opacity-50 z-10" title="Upload Legal Document (PDF) or Image (PNG/JPG)">
-            <Paperclip size={20} />
-          </button>
-          <input type="text" value={inputValue} onChange={(e) => setInputValue(e.target.value)} disabled={isLoading} placeholder="Describe your issue or attach a document..." className="w-full bg-slate-50 border border-slate-300 rounded-full py-4 pl-12 pr-16 text-slate-900 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent disabled:opacity-50" />
-          <button type="submit" disabled={isLoading || !inputValue.trim()} className="absolute right-2 bg-blue-600 text-white p-2.5 rounded-full hover:bg-blue-700 disabled:opacity-50 transition-colors">
-            <Send size={20} />
-          </button>
-        </form>
-        <p className="text-center text-xs text-slate-400 mt-3">This AI assistant routes your inquiry but does not provide official legal advice.</p>
+        <div className="max-w-4xl mx-auto">
+          
+          <div className="flex flex-col sm:flex-row items-center gap-3 w-full">
+            {/* MOVED TO LEFT: Chat Mode Toggle */}
+            <div className="flex-shrink-0 flex bg-slate-100 rounded-full p-1 border border-slate-200 w-full sm:w-auto">
+              <button 
+                onClick={() => setChatMode('intake')}
+                className={`flex-1 sm:flex-none px-4 py-2.5 rounded-full text-sm font-medium transition-all duration-200 ${chatMode === 'intake' ? 'bg-white text-blue-600 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}
+              >
+                Booking
+              </button>
+              <button 
+                onClick={() => setChatMode('general')}
+                className={`flex-1 sm:flex-none px-4 py-2.5 rounded-full text-sm font-medium transition-all duration-200 ${chatMode === 'general' ? 'bg-white text-blue-600 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}
+              >
+                Chat
+              </button>
+            </div>
+
+            {/* Chat Input */}
+            <form onSubmit={handleSendMessage} className="relative flex items-center flex-1 w-full">
+              <input type="file" accept=".pdf, image/jpeg, image/jpg, image/png" ref={fileInputRef} onChange={handleFileUpload} className="hidden" />
+              <button type="button" onClick={() => fileInputRef.current?.click()} disabled={isLoading} className="absolute left-2 text-slate-400 hover:text-blue-600 p-2 rounded-full transition-colors disabled:opacity-50 z-10" title="Upload Legal Document (PDF) or Image (PNG/JPG)">
+                <Paperclip size={20} />
+              </button>
+              <input type="text" value={inputValue} onChange={(e) => setInputValue(e.target.value)} disabled={isLoading} placeholder="Describe your issue or attach a document..." className="w-full bg-slate-50 border border-slate-300 rounded-full py-3.5 pl-12 pr-14 text-slate-900 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent disabled:opacity-50" />
+              <button type="submit" disabled={isLoading || !inputValue.trim()} className="absolute right-2 bg-blue-600 text-white p-2 rounded-full hover:bg-blue-700 disabled:opacity-50 transition-colors">
+                <Send size={18} />
+              </button>
+            </form>
+          </div>
+          
+          <p className="text-center text-xs text-slate-400 mt-3">This AI assistant routes your inquiry but does not provide official legal advice.</p>
+        </div>
       </footer>
 
     </div>
