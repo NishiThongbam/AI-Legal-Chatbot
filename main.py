@@ -549,7 +549,7 @@ async def generate_token_pdf(request: TokenRequest):
         )
         qr = qrcode.make(qr_data)
         qr_io = io.BytesIO()
-        qr.save(qr_io, format="PNG")
+        qr.save(qr_io, "PNG") 
         qr_io.seek(0)
         qr_image = ImageReader(qr_io)
 
